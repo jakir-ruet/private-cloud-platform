@@ -2215,3 +2215,2255 @@ cp -a /etc/network/interfaces \
 ```
 
 **Never modify the cluster or Ceph network configuration simply to match an example. First inspect the existing environment and plan the change.**
+
+# Proxmox VM and Container Architecture
+
+## 1. Overview
+
+Proxmox Virtual Environment (PVE) provides two primary workload virtualization technologies:
+
+1. **Virtual Machines (VMs)** — Hardware virtualization using KVM and QEMU.
+2. **Linux Containers (LXC)** — Operating-system-level virtualization using Linux kernel features.
+
+Both technologies allow administrators to deploy, manage, isolate, and operate workloads through the Proxmox management interface, CLI, and API.
+
+However, their underlying architectures are fundamentally different.
+
+A virtual machine runs its own guest operating system and virtual hardware environment.
+
+An LXC container shares the host Linux kernel while maintaining isolated processes, filesystems, networking, and resource limits.
+
+This distinction affects performance, isolation, compatibility, resource consumption, and operational management.
+
+---
+
+## 2. Learning Objectives
+
+By completing this topic, you should be able to:
+
+- Understand Proxmox VM architecture.
+- Explain the relationship between KVM and QEMU.
+- Understand the Linux KVM kernel modules.
+- Understand QEMU userspace processes.
+- Explain VM configuration and lifecycle management.
+- Understand virtual CPU and memory allocation.
+- Understand virtual devices and VirtIO drivers.
+- Understand VM disk and storage mapping.
+- Understand VM networking and Linux bridges.
+- Understand LXC container architecture.
+- Explain Linux namespaces and cgroups.
+- Understand container root filesystem and resource limits.
+- Compare KVM virtual machines and LXC containers.
+- Inspect existing VMs and containers using Proxmox CLI.
+- Identify VM and container configuration files.
+
+---
+
+# PART I — VIRTUAL MACHINE ARCHITECTURE
+
+## 3. What Is a Proxmox Virtual Machine?
+
+A virtual machine is an isolated computing environment that emulates physical computer hardware.
+
+Each VM has virtualized resources:
+
+- Virtual CPUs
+- Virtual memory
+- Virtual disks
+- Virtual network interfaces
+- Virtual BIOS or UEFI firmware
+- Virtual PCI devices
+- Virtual storage controllers
+- Virtual display devices
+
+A VM runs its own guest operating system.
+
+Examples:
+
+- Ubuntu Server
+- Debian
+- Red Hat Enterprise Linux
+- Windows Server
+- Windows 11
+- Oracle Linux
+- Rocky Linux
+
+Proxmox uses KVM and QEMU to implement VM virtualization.
+
+## 4. KVM and QEMU Architecture
+
+### 4.1 KVM — Kernel-based Virtual Machine
+
+KVM is a Linux kernel virtualization technology.
+
+It provides hardware-assisted virtualization by using CPU virtualization extensions.
+
+Intel:
+
+- Intel VT-x
+- Extended Page Tables (EPT)
+
+AMD:
+
+- AMD-V
+- Rapid Virtualization Indexing (RVI)
+
+KVM provides:
+
+- CPU virtualization
+- Hardware-assisted execution
+- Memory virtualization
+- Virtual CPU scheduling
+- Integration with Linux kernel memory management
+
+Important kernel modules:
+
+| Module      | Responsibility                            |
+| ----------- | ----------------------------------------- |
+| `kvm`       | Core KVM virtualization infrastructure    |
+| `kvm_intel` | Intel-specific KVM virtualization support |
+| `kvm_amd`   | AMD-specific KVM virtualization support   |
+
+Inspect KVM modules:
+
+```bash
+lsmod | grep kvm
+```
+
+Check CPU virtualization support:
+
+```bash
+lscpu | grep -E 'Virtualization|Hypervisor'
+```
+
+Inspect KVM device:
+
+```bash
+ls -l /dev/kvm
+```
+
+### 4.2 QEMU — Quick Emulator
+
+QEMU provides userspace machine and device emulation.
+
+In Proxmox VE, QEMU works with KVM to run virtual machines.
+
+QEMU provides virtual hardware components such as:
+
+- Virtual network adapters
+- Virtual disk controllers
+- Virtual PCI devices
+- Virtual USB controllers
+- Virtual display devices
+- Virtual BIOS and UEFI interfaces
+
+QEMU also manages the userspace execution process for each VM.
+
+Inspect QEMU version:
+
+```bash
+qemu-system-x86_64 --version
+```
+
+Inspect running QEMU/KVM processes:
+
+```bash
+ps -eo pid,ppid,user,comm,args | grep -E '[q]emu-system|[k]vm'
+```
+
+**Important:** QEMU is not itself the same thing as KVM. KVM provides kernel-level virtualization acceleration, while QEMU provides the userspace machine and device model.
+
+### 4.3 Combined KVM and QEMU Architecture
+
+```text
+                 PROXMOX VE NODE
+                       |
+                       |
+              PROXMOX MANAGEMENT
+                       |
+              +------------------+
+              | Web UI / API     |
+              | pveproxy         |
+              | pvedaemon        |
+              +------------------+
+                       |
+                       |
+              VM MANAGEMENT
+                       |
+              +------------------+
+              | QEMU Process     |
+              |                  |
+              | Virtual CPU      |
+              | Virtual Memory   |
+              | Virtual Disk     |
+              | Virtual NIC      |
+              | Virtual Devices  |
+              +------------------+
+                       |
+                       |
+              +------------------+
+              | KVM              |
+              | Linux Kernel     |
+              |                  |
+              | CPU Virtualization|
+              | Memory Management|
+              +------------------+
+                       |
+                       |
+              +------------------+
+              | Physical CPU     |
+              | Physical Memory  |
+              +------------------+
+```
+
+KVM and QEMU together provide the VM execution environment.
+
+---
+
+## 5. Proxmox VM Architecture — Complete View
+
+```text
+                  PROXMOX VE CLUSTER
+                           |
+          +----------------+----------------+
+          |                |                |
+          v                v                v
+       PVE01             PVE02             PVE03
+          |                |                |
+          |                |                |
+    +-----------+    +-----------+    +-----------+
+    | QEMU/KVM  |    | QEMU/KVM  |    | QEMU/KVM  |
+    +-----------+    +-----------+    +-----------+
+          |                |                |
+     +---------+      +---------+      +---------+
+     | VM 101  |      | VM 201  |      | VM 301  |
+     +---------+      +---------+      +---------+
+          |                |                |
+     +---------+      +---------+      +---------+
+     | Guest OS|      | Guest OS|      | Guest OS|
+     +---------+      +---------+      +---------+
+          |                |                |
+          +----------------+----------------+
+                           |
+                  VIRTUAL INFRASTRUCTURE
+                           |
+             +-------------+-------------+
+             |             |             |
+             v             v             v
+          STORAGE       NETWORK       COMPUTE
+             |             |             |
+             v             v             v
+          Ceph RBD     Linux Bridge   Physical CPU
+          Local Disk   VLAN           Physical RAM
+          Shared       VirtIO NIC     KVM
+```
+
+The diagram illustrates a clustered architecture. VM placement, migration capability, and storage accessibility depend on the actual cluster configuration.
+
+---
+
+## 6. VM Configuration Architecture
+
+Proxmox stores VM configuration in the cluster configuration filesystem.
+
+Typical configuration location:
+
+```text
+/etc/pve/nodes/<node-name>/qemu-server/<vmid>.conf
+```
+
+Example:
+
+```text
+/etc/pve/nodes/pve01-server/qemu-server/101.conf
+```
+
+A VM configuration file contains settings such as:
+
+| Parameter | Description                          |
+| --------- | ------------------------------------ |
+| `name`    | VM name                              |
+| `memory`  | Allocated memory                     |
+| `cores`   | Number of virtual CPU cores          |
+| `sockets` | Virtual CPU sockets                  |
+| `cpu`     | Virtual CPU model                    |
+| `scsi0`   | Virtual SCSI disk                    |
+| `virtio0` | VirtIO disk                          |
+| `net0`    | First virtual network interface      |
+| `boot`    | Boot device configuration            |
+| `ostype`  | Guest operating system type          |
+| `bios`    | BIOS or UEFI selection               |
+| `machine` | Virtual machine chipset/machine type |
+
+Illustrative configuration:
+
+```ini
+agent: 1
+bios: ovmf
+boot: order=scsi0
+cores: 2
+memory: 2048
+name: example-ubuntu-vm
+net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr0
+ostype: l26
+scsi0: ceph-rbd:vm-101-disk-0,size=20G
+scsihw: virtio-scsi-single
+sockets: 1
+```
+
+This is an illustrative example, not a configuration to apply to your cluster.
+
+Inspect existing VM configurations:
+
+```bash
+qm list
+```
+
+Then:
+
+```bash
+qm config <VMID>
+```
+
+Example:
+
+```bash
+qm config 101
+```
+
+To inspect the configuration file:
+
+```bash
+cat /etc/pve/nodes/$(hostname)/qemu-server/<VMID>.conf
+```
+
+Use the actual node directory and VM ID if your configuration uses a different hostname.
+
+---
+
+## 7. Virtual CPU Architecture
+
+A VM receives virtual CPUs (vCPUs).
+
+The hypervisor schedules virtual CPU execution on available physical CPU resources.
+
+Example:
+
+```text
+Physical CPU
+     |
+     +----------------------+
+     |                      |
+     v                      v
+ Physical Core 1       Physical Core 2
+     |                      |
+     +----------+-----------+
+                |
+           KVM Scheduler
+                |
+       +--------+--------+
+       |                 |
+       v                 v
+     VM 101            VM 102
+     2 vCPU            4 vCPU
+```
+
+Important CPU configuration parameters:
+
+| Parameter | Purpose                        |
+| --------- | ------------------------------ |
+| Sockets   | Virtual CPU socket topology    |
+| Cores     | Virtual cores per socket       |
+| CPU Type  | CPU feature exposure to guest  |
+| NUMA      | Virtual NUMA topology          |
+| CPU Units | Relative CPU scheduling weight |
+| CPU Limit | Maximum CPU consumption limit  |
+
+Example:
+
+```bash
+qm config 101 | grep -E '^(cores|sockets|cpu|numa|cpulimit|cpuunits)'
+```
+
+**Important:** Allocating more vCPUs than physical cores is possible, but excessive oversubscription can cause CPU contention and poor performance.
+
+In your nested lab, all three Proxmox nodes share the same physical laptop CPU.
+
+Therefore, calculate the combined resource allocation rather than treating each Proxmox node as an independent physical server.
+
+---
+
+## 8. Virtual Memory Architecture
+
+Proxmox allocates virtual memory to each VM.
+
+Example:
+
+```text
+              PHYSICAL RAM
+                   |
+          +--------+--------+
+          |                 |
+          v                 v
+       VM 101             VM 102
+       2 GB                4 GB
+          |                 |
+          v                 v
+       Guest OS           Guest OS
+```
+
+Important memory-related features:
+
+- Fixed memory allocation
+- Ballooning
+- Memory limits
+- NUMA
+- Memory sharing, depending on configuration
+
+Inspect VM memory configuration:
+
+```bash
+qm config <VMID> | grep -E '^(memory|balloon|shares|numa)'
+```
+
+Inspect host memory:
+
+```bash
+free -h
+```
+
+Inspect VM memory statistics:
+
+```bash
+qm monitor <VMID>
+```
+
+Use the QEMU monitor only for inspection commands you understand. Exit without making changes.
+
+Memory ballooning requires compatible guest drivers and configuration. It is not a substitute for sufficient physical RAM.
+
+---
+
+## 9. VM Disk and Storage Architecture
+
+Proxmox separates VM configuration from virtual disk storage.
+
+The VM configuration references a storage volume.
+
+The actual virtual disk may be stored on:
+
+- Local directory storage
+- LVM
+- LVM-thin
+- ZFS
+- NFS
+- Ceph RBD
+- Other supported storage backends
+
+### 9.1 Example — Ceph RBD VM Disk
+
+```text
+              VM 101
+                 |
+                 |
+            Virtual Disk
+                 |
+                 |
+             SCSI Device
+                 |
+                 |
+             Ceph RBD
+                 |
+         +-------+-------+
+         |       |       |
+         v       v       v
+       OSD.1   OSD.2   OSD.3
+         |       |       |
+         +-------+-------+
+                 |
+            Ceph Cluster
+```
+
+This represents a logical storage architecture. Actual data placement is determined by Ceph's CRUSH rules, pool configuration, and placement groups.
+
+### 9.2 Inspect Storage
+
+List configured storage:
+
+```bash
+pvesm status
+```
+
+List storage configuration:
+
+```bash
+cat /etc/pve/storage.cfg
+```
+
+Inspect VM disks:
+
+```bash
+qm config <VMID>
+```
+
+Inspect Ceph status:
+
+```bash
+ceph -s
+```
+
+List RBD pools:
+
+```bash
+ceph osd pool ls
+```
+
+Do not assume every VM disk uses Ceph. Inspect the actual storage reference in its configuration.
+
+---
+
+## 10. VM Networking Architecture
+
+A VM connects to the Proxmox network through a virtual network interface.
+
+The virtual NIC connects to a Linux bridge or another configured networking backend.
+
+Example:
+
+```text
+                 VM 101
+                    |
+                    |
+              Virtual NIC
+                    |
+                 VirtIO
+                    |
+                    |
+                vmbr0
+                    |
+          +---------+---------+
+          |                   |
+          v                   v
+       VM 102             Physical NIC
+                              |
+                              |
+                         Physical LAN
+```
+
+Important components:
+
+| Component    | Responsibility                 |
+| ------------ | ------------------------------ |
+| Virtual NIC  | VM network interface           |
+| VirtIO       | Paravirtualized network driver |
+| Linux Bridge | Layer 2 connectivity           |
+| VLAN Tag     | Network segmentation           |
+| Firewall     | Traffic filtering              |
+| Physical NIC | External network connectivity  |
+
+Inspect VM network configuration:
+
+```bash
+qm config <VMID> | grep '^net'
+```
+
+Inspect Linux bridges:
+
+```bash
+ip -br link show type bridge
+```
+
+Inspect bridge membership:
+
+```bash
+bridge link
+```
+
+Inspect VLAN configuration:
+
+```bash
+bridge vlan show
+```
+
+---
+
+## 11. VirtIO Architecture
+
+VirtIO is a paravirtualized device interface designed for efficient communication between virtual machines and the hypervisor.
+
+Common VirtIO devices:
+
+| Device         | Purpose                      |
+| -------------- | ---------------------------- |
+| VirtIO Block   | Virtual disk access          |
+| VirtIO SCSI    | Virtual SCSI storage         |
+| VirtIO Network | Virtual network connectivity |
+| VirtIO Balloon | Memory ballooning            |
+| VirtIO RNG     | Random number generation     |
+
+Advantages:
+
+- Lower virtualization overhead
+- Efficient I/O
+- Better throughput in suitable configurations
+- Reduced emulation overhead
+
+For production-style VM design, VirtIO devices are generally preferred where the guest operating system supports the required drivers.
+
+Windows guests may require additional VirtIO drivers.
+
+---
+
+# PART II — LINUX CONTAINER ARCHITECTURE
+
+## 12. What Is an LXC Container?
+
+LXC stands for Linux Containers.
+
+LXC provides operating-system-level virtualization.
+
+Unlike a VM, an LXC container does not run a separate kernel.
+
+It shares the Proxmox host Linux kernel.
+
+Each container receives an isolated execution environment.
+
+A container can have:
+
+- Its own process namespace
+- Its own network namespace
+- Its own mount namespace
+- Its own hostname
+- Its own root filesystem
+- CPU and memory limits
+- Network interfaces
+- User and group mappings
+
+Examples of container workloads:
+
+- Nginx
+- Redis
+- Lightweight application services
+- Monitoring agents
+- Development environments
+- Linux utility services
+
+A container can run a Linux distribution different from the host userspace distribution, but it must remain compatible with the shared host kernel.
+
+---
+
+## 13. LXC Architecture
+
+```text
+                 PROXMOX VE NODE
+                        |
+                        |
+                 LINUX KERNEL
+                        |
+           +------------+------------+
+           |            |            |
+           v            v            v
+        LXC 101      LXC 102      LXC 103
+           |            |            |
+           v            v            v
+        Process      Process      Process
+        Namespace    Namespace    Namespace
+           |            |            |
+           v            v            v
+        Network      Network      Network
+        Namespace    Namespace    Namespace
+           |            |            |
+           v            v            v
+        Root FS      Root FS      Root FS
+           |            |            |
+           +------------+------------+
+                        |
+                  HOST KERNEL
+                        |
+                  PHYSICAL HARDWARE
+```
+
+Unlike VMs, containers do not have independent guest kernels.
+
+---
+
+## 14. Linux Namespaces
+
+Namespaces provide isolation between processes and system resources.
+
+Important Linux namespaces:
+
+| Namespace | Function                                       |
+| --------- | ---------------------------------------------- |
+| PID       | Isolates process IDs                           |
+| NET       | Isolates network interfaces and network stacks |
+| MNT       | Isolates mount points                          |
+| UTS       | Isolates hostname and domain name              |
+| IPC       | Isolates inter-process communication           |
+| USER      | Isolates user and group IDs                    |
+| CGROUP    | Isolates cgroup namespace views                |
+
+Namespaces make processes inside a container appear to operate within their own isolated environment.
+
+---
+
+## 15. Linux cgroups
+
+Control Groups (cgroups) control and account for resource consumption.
+
+Proxmox uses Linux resource-control mechanisms to enforce container limits.
+
+Examples:
+
+- CPU limits
+- CPU shares
+- Memory limits
+- Memory usage accounting
+- I/O controls
+
+Inspect cgroup filesystem:
+
+```bash
+findmnt -t cgroup,cgroup2
+```
+
+Inspect container configuration:
+
+```bash
+pct config <CTID>
+```
+
+Inspect container resource configuration:
+
+```bash
+pct config <CTID> | grep -E '^(cores|cpulimit|cpuunits|memory|swap)'
+```
+
+---
+
+## 16. LXC Container Configuration
+
+Container configurations are stored in the cluster configuration filesystem.
+
+Typical path:
+
+```text
+/etc/pve/nodes/<node-name>/lxc/<CTID>.conf
+```
+
+Example:
+
+```text
+/etc/pve/nodes/pve01-server/lxc/201.conf
+```
+
+Illustrative configuration:
+
+```ini
+arch: amd64
+cores: 2
+hostname: nginx-container
+memory: 1024
+net0: name=eth0,bridge=vmbr0,ip=dhcp,type=veth
+ostype: debian
+rootfs: local-lvm:vm-201-disk-0,size=8G
+swap: 512
+unprivileged: 1
+```
+
+This is an example only. Actual container configuration depends on your storage and networking architecture.
+
+Inspect containers:
+
+```bash
+pct list
+```
+
+Inspect a container configuration:
+
+```bash
+pct config <CTID>
+```
+
+Inspect container status:
+
+```bash
+pct status <CTID>
+```
+
+---
+
+## 17. Container Networking Architecture
+
+LXC containers typically use virtual Ethernet interfaces.
+
+A virtual Ethernet pair connects the container network namespace to the Proxmox host networking infrastructure.
+
+```text
+              LXC CONTAINER
+                    |
+                    |
+                  eth0
+                    |
+                    |
+                 veth pair
+                    |
+                    |
+               Linux Bridge
+                    |
+                    |
+               Physical NIC
+                    |
+                    |
+                External LAN
+```
+
+Inspect container networking:
+
+```bash
+pct config <CTID> | grep '^net'
+```
+
+Inspect host network interfaces:
+
+```bash
+ip -br addr
+```
+
+Inspect bridge ports:
+
+```bash
+bridge link
+```
+
+---
+
+# PART III — VM VS CONTAINER
+
+## 18. KVM VM vs LXC Container
+
+| Feature              | KVM Virtual Machine                                          | LXC Container                                        |
+| -------------------- | ------------------------------------------------------------ | ---------------------------------------------------- |
+| Virtualization       | Hardware virtualization                                      | OS-level virtualization                              |
+| Kernel               | Independent guest kernel                                     | Shared host kernel                                   |
+| Operating system     | Independent guest OS                                         | Linux userspace                                      |
+| Isolation            | Virtual hardware boundary                                    | Kernel namespace and resource isolation              |
+| CPU overhead         | Generally higher                                             | Generally lower                                      |
+| Memory overhead      | Generally higher                                             | Generally lower                                      |
+| Boot time            | Typically longer                                             | Typically shorter                                    |
+| Hardware emulation   | Available through QEMU                                       | Not a separate virtual hardware platform             |
+| Windows support      | Yes                                                          | No native Windows guest support                      |
+| Linux support        | Yes                                                          | Linux distributions with host-kernel compatibility   |
+| Kernel customization | Guest kernel can be customized                               | Uses host kernel                                     |
+| Typical use          | Databases, Windows, full OS workloads                        | Lightweight Linux services                           |
+| Migration            | Supported with appropriate storage and network configuration | Supported with appropriate configuration and storage |
+| Resource management  | VM CPU and memory settings                                   | cgroups and container limits                         |
+
+### 18.1 When Should You Use a VM?
+
+Choose a VM when you need:
+
+- A separate guest kernel.
+- Windows Server.
+- Independent kernel configuration.
+- Stronger isolation boundaries.
+- Different operating-system requirements.
+- Workloads that require dedicated virtual hardware.
+- A complete server operating system environment.
+
+### 18.2 When Should You Use LXC?
+
+Choose LXC when you need:
+
+- Lightweight Linux services.
+- Lower memory consumption.
+- Fast deployment.
+- High workload density.
+- Isolated application environments.
+- Linux-based infrastructure services.
+
+**Security note:** LXC containers share the host kernel. They are not equivalent to independent VM security boundaries. For mutually untrusted workloads, evaluate the threat model carefully and consider VMs.
+
+---
+
+# PART IV — VM AND CONTAINER MANAGEMENT
+
+## 19. VM Lifecycle
+
+A typical VM lifecycle:
+
+```text
+         CREATE VM
+             |
+             v
+        CONFIGURE VM
+             |
+             v
+         START VM
+             |
+             v
+       RUNNING STATE
+             |
+      +------+------+
+      |             |
+      v             v
+    STOP          REBOOT
+      |             |
+      v             |
+    STOPPED <-------+
+      |
+      v
+    DESTROY
+```
+
+Common commands:
+
+| Operation             | Command                           |
+| --------------------- | --------------------------------- |
+| List VMs              | `qm list`                         |
+| Show VM configuration | `qm config <VMID>`                |
+| Check VM status       | `qm status <VMID>`                |
+| Start VM              | `qm start <VMID>`                 |
+| Shutdown VM           | `qm shutdown <VMID>`              |
+| Stop VM               | `qm stop <VMID>`                  |
+| Reboot VM             | `qm reboot <VMID>`                |
+| Migrate VM            | `qm migrate <VMID> <target-node>` |
+
+Do not execute lifecycle commands during this architecture-discovery lab.
+
+## 20. Container Lifecycle
+
+Common commands:
+
+| Operation          | Command                            |
+| ------------------ | ---------------------------------- |
+| List containers    | `pct list`                         |
+| Show configuration | `pct config <CTID>`                |
+| Check status       | `pct status <CTID>`                |
+| Start container    | `pct start <CTID>`                 |
+| Shutdown container | `pct shutdown <CTID>`              |
+| Stop container     | `pct stop <CTID>`                  |
+| Reboot container   | `pct reboot <CTID>`                |
+| Enter container    | `pct enter <CTID>`                 |
+| Migrate container  | `pct migrate <CTID> <target-node>` |
+
+Again, these are reference commands. The current lab is inspection-only.
+
+---
+
+# PART V — PRACTICAL LABS
+
+## 21. Lab 01 — Inspect Proxmox VM Inventory
+
+### Objective
+
+Identify the existing VMs across your Proxmox cluster.
+
+### Execute on PVE01
+
+```bash
+qm list
+```
+
+Inspect cluster resources:
+
+```bash
+pvesh get /cluster/resources --type vm
+```
+
+Expected information:
+
+- VM ID
+- VM name
+- Node placement
+- VM status
+- CPU allocation
+- Memory allocation
+
+### Inspect a VM
+
+Choose an existing VM ID:
+
+```bash
+qm status <VMID>
+```
+
+```bash
+qm config <VMID>
+```
+
+Inspect VM disk configuration:
+
+```bash
+qm config <VMID> | grep -E '^(scsi|virtio|sata|ide|efidisk|tpmstate)'
+```
+
+Inspect VM network configuration:
+
+```bash
+qm config <VMID> | grep '^net'
+```
+
+Inspect VM resource configuration:
+
+```bash
+qm config <VMID> | grep -E '^(cores|sockets|memory|balloon|cpu|numa)'
+```
+
+Record your findings.
+
+---
+
+## 22. Lab 02 — Inspect QEMU and KVM
+
+### Objective
+
+Understand how Proxmox executes virtual machines.
+
+Execute:
+
+```bash
+lsmod | grep kvm
+```
+
+```bash
+ls -l /dev/kvm
+```
+
+```bash
+qemu-system-x86_64 --version
+```
+
+Inspect running VM processes:
+
+```bash
+ps -eo pid,ppid,user,comm,args | grep -E '[q]emu-system|[k]vm'
+```
+
+Inspect VM processes using the Proxmox process listing:
+
+```bash
+pgrep -af 'kvm|qemu-system'
+```
+
+**Expected learning outcomes:**
+
+- Identify KVM kernel modules.
+- Understand the `/dev/kvm` device.
+- Identify QEMU/KVM processes.
+- Understand the relationship between VM IDs and running processes.
+
+If no VMs are running, there may be no QEMU VM processes. That is not necessarily an error.
+
+---
+
+## 23. Lab 03 — Inspect VM Storage
+
+### Objective
+
+Understand the relationship between VM configuration and storage volumes.
+
+Execute:
+
+```bash
+pvesm status
+```
+
+```bash
+cat /etc/pve/storage.cfg
+```
+
+Inspect VM configuration:
+
+```bash
+qm config <VMID>
+```
+
+Inspect Ceph health:
+
+```bash
+ceph -s
+```
+
+Inspect Ceph pools:
+
+```bash
+ceph osd pool ls
+```
+
+Record:
+
+- VM ID
+- VM disk volume reference
+- Storage backend
+- Disk size
+- Ceph or local storage
+- Storage availability
+
+Do not create or delete storage volumes.
+
+---
+
+## 24. Lab 04 — Inspect VM Networking
+
+### Objective
+
+Identify how virtual machines connect to the Proxmox network.
+
+Execute:
+
+```bash
+qm config <VMID> | grep '^net'
+```
+
+```bash
+ip -br addr
+```
+
+```bash
+ip -br link show type bridge
+```
+
+```bash
+bridge link
+```
+
+```bash
+bridge vlan show
+```
+
+Record:
+
+- Virtual NIC model
+- Bridge name
+- VLAN tag, if configured
+- Firewall flag, if configured
+- MAC address
+
+---
+
+## 25. Lab 05 — Inspect LXC Container Inventory
+
+### Objective
+
+Identify existing containers across the cluster.
+
+Execute:
+
+```bash
+pct list
+```
+
+Inspect cluster resources:
+
+```bash
+pvesh get /cluster/resources --type vm
+```
+
+Note: Proxmox reports both VMs and containers under the cluster resource type `vm`.
+
+Inspect a container:
+
+```bash
+pct status <CTID>
+```
+
+```bash
+pct config <CTID>
+```
+
+Inspect container resource configuration:
+
+```bash
+pct config <CTID> | grep -E '^(cores|cpulimit|cpuunits|memory|swap)'
+```
+
+Inspect container networking:
+
+```bash
+pct config <CTID> | grep '^net'
+```
+
+Inspect container storage:
+
+```bash
+pct config <CTID> | grep -E '^(rootfs|mp[0-9]+)'
+```
+
+---
+
+## 26. Lab 06 — Inspect LXC Kernel Isolation
+
+### Objective
+
+Understand the Linux kernel features that provide container isolation.
+
+On a Proxmox node:
+
+```bash
+uname -r
+```
+
+Inspect cgroup mounts:
+
+```bash
+findmnt -t cgroup,cgroup2
+```
+
+Inspect namespaces:
+
+```bash
+lsns
+```
+
+Inspect container configuration:
+
+```bash
+pct config <CTID>
+```
+
+If the container is running, inspect its processes:
+
+```bash
+pct exec <CTID> -- ps -ef
+```
+
+The last command is read-only, but requires an existing running container.
+
+Record the relationship between:
+
+- Host kernel
+- Container process isolation
+- Container root filesystem
+- Container network interface
+- Container resource limits
+
+---
+
+## 27. Lab 07 — Compare VM and LXC Resource Allocation
+
+### Objective
+
+Understand resource allocation across your Proxmox environment.
+
+Execute:
+
+```bash
+qm list
+```
+
+```bash
+pct list
+```
+
+Inspect node resource usage:
+
+```bash
+free -h
+```
+
+```bash
+lscpu
+```
+
+```bash
+pvesh get /nodes/$(hostname)/status
+```
+
+Create a resource comparison table:
+
+| Resource          | VM                          | LXC                         |
+| ----------------- | --------------------------- | --------------------------- |
+| CPU allocation    | Record actual configuration | Record actual configuration |
+| Memory allocation | Record actual configuration | Record actual configuration |
+| Storage           | Record actual volume        | Record actual rootfs        |
+| Network           | Record virtual NIC          | Record veth interface       |
+| Kernel            | Guest kernel                | Shared host kernel          |
+
+Remember that VM and container resource limits are not identical to actual physical resource consumption.
+
+---
+
+# PART VI — CLUSTER AND MIGRATION ARCHITECTURE
+
+## 28. VM Placement Across Cluster Nodes
+
+In a Proxmox cluster, VMs can run on different nodes.
+
+Example:
+
+```text
+             PROXMOX CLUSTER
+                    |
+        +-----------+-----------+
+        |           |           |
+        v           v           v
+      PVE01       PVE02       PVE03
+        |           |           |
+        v           v           v
+      VM101       VM201       VM301
+```
+
+VM placement depends on:
+
+- CPU availability
+- Memory availability
+- Storage accessibility
+- Network connectivity
+- HA configuration
+- Administrative placement decisions
+
+## 29. VM Migration Architecture
+
+Migration moves a VM from one Proxmox node to another.
+
+Two important migration categories:
+
+**Offline migration**
+
+The VM is stopped before being moved.
+
+**Online migration**
+
+The VM continues running during the migration process, with a final switchover phase.
+
+Shared storage such as Ceph RBD can simplify VM migration because the VM disk does not necessarily need to be copied between local disks.
+
+```text
+          SOURCE NODE
+              |
+              v
+           VM 101
+              |
+              |
+          Shared RBD
+              |
+      +-------+-------+
+      |               |
+      v               v
+    PVE01           PVE02
+      |               |
+      +-------+-------+
+              |
+         VM Migration
+              |
+              v
+          TARGET NODE
+```
+
+Actual migration feasibility depends on CPU compatibility, VM hardware configuration, network configuration, storage availability, and Proxmox migration settings.
+
+For your nested lab, do not perform migration experiments until we validate available resources and the storage configuration.
+
+# Module 02 — Proxmox VE Storage Architecture
+
+## 1. Overview
+
+Storage is a foundational component of Proxmox VE. It provides the persistent data layer for virtual machines, LXC containers, ISO images, templates, backups, and other resources.
+
+Proxmox VE supports multiple storage backends, including:
+
+- Directory storage
+- LVM
+- LVM-thin
+- ZFS
+- NFS
+- iSCSI
+- Ceph RBD
+- CephFS
+- Proxmox Backup Server storage
+
+In this lab, the primary focus is understanding local storage, shared storage, and Ceph distributed storage.
+
+### Learning objectives
+
+By the end of this module, you should be able to:
+
+1. Understand the Proxmox storage architecture.
+2. Distinguish between file-level and block-level storage.
+3. Understand local and shared storage.
+4. Understand storage plugins and storage configuration.
+5. Explain LVM, LVM-thin, ZFS, NFS, Ceph RBD, and CephFS.
+6. Understand Ceph MON, MGR, and OSD interactions.
+7. Understand storage pools and RBD images.
+8. Inspect storage configuration and status.
+9. Understand VM disk provisioning and storage migration.
+10. Identify storage-related risks and operational considerations.
+
+---
+
+## 2. Proxmox VE Storage Architecture
+
+Proxmox VE uses a storage abstraction layer to manage different storage backends through a common interface.
+
+The storage configuration is centrally maintained in:
+
+```text
+/etc/pve/storage.cfg
+```
+
+This configuration is distributed across cluster nodes through PMXCFS.
+
+### High-level architecture
+
+```text
+                  Proxmox VE Cluster
+          ┌────────────┬────────────┬────────────┐
+          │   PVE01    │   PVE02    │   PVE03    │
+          └─────┬──────┴─────┬──────┴─────┬──────┘
+                │            │            │
+                └────────────┼────────────┘
+                             │
+                   Proxmox Storage Layer
+                             │
+          ┌──────────────────┼──────────────────┐
+          │                  │                  │
+     Local Storage      Shared Storage     Distributed Storage
+          │                  │                  │
+     ┌────┴────┐        ┌─────┴────┐       ┌─────┴────┐
+     │Directory│        │   NFS    │       │  Ceph    │
+     │LVM      │        │  iSCSI   │       │   RBD    │
+     │LVM-thin │        │          │       │  CephFS  │
+     │ZFS      │        └──────────┘       └──────────┘
+     └─────────┘
+```
+
+**Important:** A storage backend being visible to multiple nodes does not automatically mean it supports every Proxmox feature. Content types, snapshots, cloning, migration, and shared-storage behavior depend on the specific backend.
+
+---
+
+## 3. Storage Classification
+
+### 3.1 Local storage
+
+Local storage physically or logically belongs to an individual Proxmox node.
+
+Examples:
+
+- Directory storage
+- Local LVM
+- LVM-thin
+- Local ZFS pools
+
+Characteristics:
+
+- Storage is associated with a particular node.
+- VM disks may not be accessible from other nodes.
+- VM migration may require disk migration.
+- Local storage availability depends on the node and its underlying disks.
+
+### 3.2 Shared storage
+
+Shared storage is accessible by multiple Proxmox nodes.
+
+Examples:
+
+- NFS
+- iSCSI with appropriate shared-storage configuration
+- Ceph RBD
+- CephFS
+
+Characteristics:
+
+- Multiple nodes can access the same storage infrastructure.
+- Supports cluster-oriented VM placement and migration workflows.
+- Can reduce or eliminate the need to copy VM disks during migration.
+- Availability depends on the storage backend's architecture.
+
+### 3.3 Distributed storage
+
+Distributed storage distributes data across multiple storage nodes.
+
+Ceph is the primary distributed-storage technology in this lab.
+
+Characteristics:
+
+- Data is distributed across multiple OSDs.
+- Replication or erasure coding provides data protection.
+- Storage services operate across the cluster.
+- Failure and recovery behavior depend on Ceph configuration and available capacity.
+
+---
+
+## 4. Proxmox Storage Backends
+
+| Storage Backend | Type                          | Primary Use                                 |
+| --------------- | ----------------------------- | ------------------------------------------- |
+| Directory       | File-level                    | ISO images, templates, backups, disk images |
+| LVM             | Block-level                   | VM and container volumes                    |
+| LVM-thin        | Thin-provisioned block        | VM disks and container volumes              |
+| ZFS             | Filesystem and volume manager | VM disks, containers, snapshots             |
+| NFS             | Network file storage          | Shared files and VM disks                   |
+| iSCSI           | Network block storage         | Shared block devices                        |
+| Ceph RBD        | Distributed block storage     | VM disks and container volumes              |
+| CephFS          | Distributed filesystem        | Shared files, ISOs, templates               |
+| PBS             | Backup storage                | VM and container backups                    |
+
+The exact content types supported by each backend depend on its Proxmox storage plugin and configuration.
+
+---
+
+## 5. File-Level vs Block-Level Storage
+
+### 5.1 File-level storage
+
+File-level storage exposes files and directories.
+
+Example:
+
+```text
+/var/lib/vz/
+├── images/
+│   ├── 100/
+│   │   └── vm-100-disk-0.qcow2
+│   └── 101/
+├── dump/
+│   └── vzdump-qemu-100.vma.zst
+├── template/
+│   ├── iso/
+│   └── cache/
+└── snippets/
+```
+
+Common examples:
+
+- Directory storage
+- NFS
+- CephFS
+
+### 5.2 Block-level storage
+
+Block storage exposes virtual block devices or logical volumes.
+
+Examples:
+
+```text
+/dev/pve/vm-100-disk-0
+/dev/mapper/pve-vm--100--disk--0
+```
+
+Common examples:
+
+- LVM
+- LVM-thin
+- iSCSI
+- Ceph RBD
+- ZFS zvols
+
+### Comparison
+
+| Feature          | File-Level               | Block-Level                    |
+| ---------------- | ------------------------ | ------------------------------ |
+| Interface        | Files and directories    | Virtual block devices          |
+| Typical use      | ISOs, backups, templates | VM disks                       |
+| Filesystem       | Usually exposed          | Managed by guest or host layer |
+| Snapshot support | Backend-dependent        | Backend-dependent              |
+| Examples         | NFS, Directory, CephFS   | LVM-thin, RBD, iSCSI           |
+
+---
+
+## 6. LVM Architecture
+
+Logical Volume Manager provides flexible block storage management.
+
+Architecture:
+
+```text
+Physical Disk
+     │
+     ▼
+Physical Volume (PV)
+     │
+     ▼
+Volume Group (VG)
+     │
+     ▼
+Logical Volume (LV)
+     │
+     ▼
+VM Disk / Container Volume
+```
+
+Useful commands:
+
+```bash
+pvs
+vgs
+lvs
+lsblk
+```
+
+Example:
+
+```text
+Physical Volume: /dev/sda
+Volume Group:    pve
+Logical Volumes:
+  root
+  swap
+  data
+```
+
+The actual volume layout depends on how Proxmox was installed.
+
+---
+
+## 7. LVM-Thin Architecture
+
+LVM-thin provides thin provisioning.
+
+Thin provisioning means virtual disks can have a logical capacity larger than their currently allocated physical data.
+
+Example:
+
+```text
+Thin Pool: pve/data
+     │
+     ├── vm-100-disk-0
+     ├── vm-101-disk-0
+     └── vm-102-disk-0
+```
+
+Advantages:
+
+- Efficient capacity utilization.
+- Thin-provisioned virtual disks.
+- Snapshot support.
+- Efficient allocation for virtual workloads.
+
+Operational risks:
+
+- Thin-pool exhaustion.
+- Metadata exhaustion.
+- Over-provisioning.
+- Snapshot growth.
+
+Useful commands:
+
+```bash
+lvs -a
+lvs -o+data_percent,metadata_percent
+```
+
+Monitor both data and metadata utilization.
+
+---
+
+## 8. ZFS Storage Architecture
+
+ZFS combines filesystem and volume-management capabilities.
+
+Architecture:
+
+```text
+Physical Disks
+      │
+      ▼
+    vdevs
+      │
+      ▼
+   ZFS Pool
+      │
+      ├── ZFS Dataset
+      ├── ZFS Dataset
+      └── ZFS zvol
+```
+
+Common ZFS capabilities:
+
+- Checksums
+- Copy-on-write
+- Snapshots
+- Clones
+- Compression
+- Replication
+
+Example inspection:
+
+```bash
+zpool status
+zpool list
+zfs list
+```
+
+ZFS can be useful for local storage, but its memory requirements and disk topology should be considered carefully in a resource-constrained nested lab.
+
+---
+
+## 9. Ceph Distributed Storage Architecture
+
+Ceph is the distributed-storage platform used in this private-cloud lab.
+
+Ceph provides scalable storage through distributed storage daemons and cluster maps.
+
+### 9.1 Ceph architecture
+
+```text
+                  Proxmox VE Cluster
+          ┌────────────┬────────────┬────────────┐
+          │   PVE01    │   PVE02    │   PVE03    │
+          └─────┬──────┴─────┬──────┴─────┬──────┘
+                │            │            │
+                └────────────┼────────────┘
+                             │
+                      Ceph Cluster
+                             │
+       ┌─────────────────────┼─────────────────────┐
+       │                     │                     │
+   MON Services         MGR Services          OSD Services
+       │                     │                     │
+  Cluster Maps         Monitoring/API         Data Storage
+  MON Quorum           Dashboard              Replication
+                                               Recovery
+                                                   │
+                                             Physical Disks
+```
+
+### 9.2 Ceph components
+
+| Component | Responsibility                                                          |
+| --------- | ----------------------------------------------------------------------- |
+| MON       | Maintains authoritative cluster maps and participates in monitor quorum |
+| MGR       | Provides management, monitoring, metrics, and dashboard functionality   |
+| OSD       | Stores object data and handles replication, recovery, and backfill      |
+| MDS       | Provides metadata services for CephFS                                   |
+| CRUSH     | Determines data placement across the storage topology                   |
+
+**Important:** MDS is required for CephFS, but not for Ceph RBD.
+
+### 9.3 Ceph data flow
+
+Simplified RBD write path:
+
+```text
+Proxmox VM
+    │
+    ▼
+Virtual Disk (RBD)
+    │
+    ▼
+QEMU / librbd
+    │
+    ▼
+Ceph Client
+    │
+    ▼
+CRUSH Placement
+    │
+    ▼
+Primary OSD
+    │
+    ├──────────────► Replica OSD
+    │
+    └──────────────► Replica OSD
+```
+
+The actual number of replicas depends on the pool's configured replication size and available failure domains.
+
+---
+
+## 10. Ceph RBD Architecture
+
+RADOS Block Device (RBD) provides distributed block storage.
+
+It is commonly used for Proxmox VM disks.
+
+Example:
+
+```text
+Ceph Cluster
+     │
+     ▼
+RBD Pool
+     │
+     ├── vm-100-disk-0
+     ├── vm-101-disk-0
+     └── vm-102-disk-0
+```
+
+RBD provides:
+
+- Distributed block devices
+- Thin provisioning
+- Snapshot support
+- Cloning
+- Shared access through Ceph clients
+
+Proxmox integrates with Ceph RBD to provide VM and container disk storage.
+
+### Example pool inspection
+
+```bash
+ceph osd pool ls
+ceph osd pool ls detail
+rbd pool ls
+```
+
+### Important distinction
+
+Do not assume that every storage content type should be placed in an RBD pool.
+
+| Content             | Typical Storage                                                  |
+| ------------------- | ---------------------------------------------------------------- |
+| VM disks            | Ceph RBD                                                         |
+| Container volumes   | Ceph RBD or another supported volume backend                     |
+| ISO images          | Directory, NFS, or CephFS                                        |
+| Container templates | Directory, NFS, or CephFS                                        |
+| Backup archives     | Proxmox Backup Server, NFS, or another backup-compatible backend |
+| Snippets            | Directory, NFS, or another supported file backend                |
+
+A Ceph RBD pool is not a general-purpose shared filesystem.
+
+---
+
+## 11. Ceph Pool and Placement Architecture
+
+A Ceph pool defines logical storage properties.
+
+Important concepts:
+
+- Pool name
+- Replication size
+- Minimum replication requirement
+- Placement groups
+- CRUSH ruleset
+- Application type
+- Quotas
+
+Example inspection:
+
+```bash
+ceph osd pool ls detail
+ceph osd crush rule ls
+ceph osd df tree
+```
+
+### Replication example
+
+For a pool configured with:
+
+```text
+size = 3
+min_size = 2
+```
+
+Ceph attempts to maintain three copies of each object.
+
+The pool may continue I/O with at least two available copies, subject to cluster health and other conditions.
+
+In a three-node lab, ensure the CRUSH failure domain is appropriate. A host-level failure domain can distribute replicas across different Proxmox nodes when the OSD topology supports it.
+
+**Capacity consideration:** With three replicas, usable capacity is approximately one-third of raw capacity before accounting for metadata, operational headroom, and other overhead.
+
+---
+
+## 12. CephFS Architecture
+
+CephFS is a distributed POSIX-compatible filesystem built on Ceph.
+
+Architecture:
+
+```text
+Proxmox Node
+     │
+     ▼
+CephFS Client
+     │
+     ├──────────────► MDS
+     │                 Metadata
+     │
+     └──────────────► Ceph OSDs
+                       File Data
+```
+
+CephFS uses:
+
+- MDS for metadata operations.
+- OSDs for file data.
+- MON services for cluster maps and authentication coordination.
+
+Typical uses:
+
+- Shared ISO storage.
+- Shared templates.
+- Shared files.
+- Other supported file-based content.
+
+CephFS and Ceph RBD solve different storage problems:
+
+| Feature          | Ceph RBD     | CephFS             |
+| ---------------- | ------------ | ------------------ |
+| Storage model    | Block        | Filesystem         |
+| Main use         | VM disks     | Shared files       |
+| MDS required     | No           | Yes                |
+| Client interface | Block device | Mounted filesystem |
+
+---
+
+## 13. Proxmox Storage Configuration
+
+The main storage configuration file is:
+
+```bash
+/etc/pve/storage.cfg
+```
+
+Inspect it:
+
+```bash
+cat /etc/pve/storage.cfg
+```
+
+Example conceptual configuration:
+
+```text
+dir: local
+    path /var/lib/vz
+    content iso,vztmpl,backup
+
+lvmthin: local-lvm
+    thinpool data
+    vgname pve
+    content images,rootdir
+
+rbd: ceph-vm
+    pool vm-pool
+    content images,rootdir
+    username admin
+```
+
+This is an illustrative example, not a configuration to paste into your cluster. Actual storage IDs, pool names, credentials, and supported content types must match the environment.
+
+### Storage configuration fields
+
+| Field     | Purpose                                           |
+| --------- | ------------------------------------------------- |
+| `dir`     | Directory storage plugin                          |
+| `lvmthin` | LVM-thin storage plugin                           |
+| `rbd`     | Ceph RBD storage plugin                           |
+| `pool`    | Ceph pool name                                    |
+| `content` | Permitted content types                           |
+| `nodes`   | Restricts storage availability to selected nodes  |
+| `shared`  | Declares shared-storage behavior where applicable |
+| `disable` | Disables a storage definition                     |
+
+---
+
+## 14. VM Disk Architecture
+
+A VM disk is a virtual block device presented to the guest operating system.
+
+Example:
+
+```text
+VM 100
+  │
+  ├── CPU
+  ├── Memory
+  ├── Network Interface
+  └── Virtual Disk
+          │
+          ▼
+     Proxmox Storage
+          │
+          ▼
+     Storage Backend
+```
+
+Inspect VM configuration:
+
+```bash
+qm config 100
+```
+
+Example output:
+
+```text
+scsi0: ceph-vm:vm-100-disk-0,size=20G
+scsihw: virtio-scsi-single
+boot: order=scsi0
+```
+
+The exact output depends on the VM and its storage configuration.
+
+### Disk bus types
+
+| Bus          | Description                     |
+| ------------ | ------------------------------- |
+| IDE          | Legacy virtual disk interface   |
+| SATA         | Emulated SATA interface         |
+| SCSI         | Common choice for virtual disks |
+| VirtIO Block | Paravirtualized block interface |
+
+For many modern Linux workloads, VirtIO SCSI is a practical choice.
+
+---
+
+## 15. Storage Migration
+
+Storage migration moves VM disk data between storage backends.
+
+Example:
+
+```text
+VM 100
+   │
+   ▼
+Source Storage
+   │
+   │ Storage Migration
+   ▼
+Destination Storage
+```
+
+Inspect VM storage configuration:
+
+```bash
+qm config 100
+```
+
+List available storage:
+
+```bash
+pvesm status
+```
+
+Example migration command:
+
+```bash
+qm move_disk 100 scsi0 destination-storage
+```
+
+This is an operational command, not part of the read-only discovery lab. Do not execute it until the source VM, destination storage, disk identifier, capacity, and migration impact have been validated.
+
+---
+
+## 16. Storage Availability and High Availability
+
+Proxmox HA and storage availability are related but separate concerns.
+
+A VM may be configured for HA, but successful recovery also depends on:
+
+- A healthy cluster quorum.
+- Available target nodes.
+- Accessible VM disk storage.
+- Sufficient CPU and memory.
+- Correct fencing and HA configuration.
+- Healthy storage services.
+
+### Local versus shared storage
+
+| Scenario                           | Local Storage                                               | Shared Storage                         |
+| ---------------------------------- | ----------------------------------------------------------- | -------------------------------------- |
+| VM disk accessible on another node | Usually no                                                  | Yes, if backend is available           |
+| Live migration without disk copy   | Generally no                                                | Often possible                         |
+| Node failure recovery              | Requires another accessible disk copy or recovery mechanism | Depends on shared backend availability |
+| Storage failure domain             | Individual node/device                                      | Depends on shared backend architecture |
+
+Shared storage does not eliminate the need for backups.
+
+---
+
+## 17. Storage Monitoring
+
+### Proxmox storage status
+
+```bash
+pvesm status
+```
+
+### Disk and filesystem capacity
+
+```bash
+lsblk
+df -hT
+```
+
+### LVM status
+
+```bash
+pvs
+vgs
+lvs
+```
+
+### ZFS status
+
+```bash
+zpool status
+zpool list
+zfs list
+```
+
+### Ceph status
+
+```bash
+ceph -s
+ceph health detail
+ceph osd tree
+ceph osd df tree
+ceph df
+```
+
+### RBD status
+
+```bash
+ceph osd pool ls
+rbd pool ls
+```
+
+Monitoring should include:
+
+- Available capacity.
+- OSD health and availability.
+- Pool utilization.
+- Replication state.
+- Recovery and backfill activity.
+- I/O latency.
+- Storage errors.
+- Thin-pool data and metadata utilization.
+
+---
+
+## 18. Hands-on Lab — Storage Discovery
+
+**Lab policy:** Read-only inspection only. Do not create, remove, resize, or migrate storage during this exercise.
+
+Run commands on an actual Proxmox node, not on the Ubuntu VirtualBox host.
+
+### Lab 01 — Proxmox storage inventory
+
+```bash
+echo "===== PROXMOX VERSION ====="
+pveversion -v
+
+echo "===== STORAGE STATUS ====="
+pvesm status
+
+echo "===== STORAGE CONFIGURATION ====="
+cat /etc/pve/storage.cfg
+
+echo "===== BLOCK DEVICES ====="
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+
+echo "===== FILESYSTEM CAPACITY ====="
+df -hT
+```
+
+### Lab 02 — LVM inspection
+
+```bash
+echo "===== PHYSICAL VOLUMES ====="
+pvs
+
+echo "===== VOLUME GROUPS ====="
+vgs
+
+echo "===== LOGICAL VOLUMES ====="
+lvs -a
+```
+
+### Lab 03 — Ceph health inspection
+
+```bash
+echo "===== CEPH STATUS ====="
+ceph -s
+
+echo "===== CEPH HEALTH DETAILS ====="
+ceph health detail
+
+echo "===== CEPH MONITORS ====="
+ceph mon dump
+
+echo "===== CEPH OSD TREE ====="
+ceph osd tree
+
+echo "===== CEPH POOLS ====="
+ceph osd pool ls detail
+
+echo "===== CEPH CAPACITY ====="
+ceph df
+```
+
+### Lab 04 — RBD inspection
+
+```bash
+echo "===== RBD POOLS ====="
+rbd pool ls
+
+echo "===== RBD IMAGES ====="
+rbd ls -l <existing-rbd-pool>
+```
+
+Replace `<existing-rbd-pool>` with a real pool name discovered in Lab 03. Do not assume a pool name.
+
+### Lab 05 — VM disk mapping
+
+First list VMs:
+
+```bash
+qm list
+```
+
+Choose an existing VMID:
+
+```bash
+qm config <VMID>
+```
+
+Identify:
+
+- VM disk ID.
+- Storage ID.
+- Disk size.
+- Disk bus.
+- Cache mode, if configured.
+- Discard and SSD settings, if configured.
+
+### Lab 06 — Cluster-wide storage view
+
+```bash
+pvesh get /storage
+pvesm status
+```
+
+Compare the storage visibility and status across your three Proxmox nodes.
+
+---
+
+## 19. Architecture Documentation Template
+
+Record your actual environment.
+
+### Storage backend inventory
+
+| Storage ID | Backend | Content Types | Shared | Nodes | Status |
+| ---------- | ------- | ------------- | ------ | ----- | ------ |
+|            |         |               |        |       |        |
+|            |         |               |        |       |        |
+|            |         |               |        |       |        |
+
+### Ceph inventory
+
+| Component | PVE01 | PVE02 | PVE03 | Notes |
+| --------- | ----- | ----- | ----- | ----- |
+| MON       |       |       |       |       |
+| MGR       |       |       |       |       |
+| OSD       |       |       |       |       |
+| MDS       |       |       |       |       |
+
+Only record MDS if CephFS is deployed.
+
+### Ceph pool inventory
+
+| Pool | Application | Size | Min Size | PG Configuration | Purpose |
+| ---- | ----------- | ---: | -------: | ---------------- | ------- |
+|      |             |      |          |                  |         |
+|      |             |      |          |                  |         |
+
+### VM disk inventory
+
+| VMID | VM Name | Disk | Storage ID | Capacity | Bus |
+| ---- | ------- | ---- | ---------- | -------- | --- |
+|      |         |      |            |          |     |
+|      |         |      |            |          |     |
