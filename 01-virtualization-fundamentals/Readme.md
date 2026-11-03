@@ -245,6 +245,14 @@ systemctl status pveproxy
 systemctl status pvestatd
 ```
 
+Proxmox management services:
+
+```bash
+systemctl is-active pvedaemon
+systemctl is-active pveproxy
+systemctl is-active pvestatd
+```
+
 | Service   | Responsibility                              |
 | --------- | ------------------------------------------- |
 | pvedaemon | Proxmox management API and local operations |
